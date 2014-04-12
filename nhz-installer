@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:";
+source nhz.conf
+function setbin_paths {
+    
+    export java_bin=$(which java);
+    export wget_bin=$(which wget);
+    export unzip_bin=$(which unzip);
+    export gpg_bin=$(which gpg);
+    export git_bin=$(which git);
+    export shasum_bin=$(which sha256sum);
+
+    if [[ -z "$java_bin" ]] || [[ -z "$wget_bin" ]] || [[ -z "$unzip_bin" ]] ||
+       [[ -z "$gpg_bin" ]] || [[ -z "$shasum_bin" ]] || [[ -z "$git_bin" ]]; then
+
+        return 1;
+    else
+
+        return 0;
+    fi
+
+}
+   
+
+function install_deps {
+
+
+    if ! setbin_paths; then
+
+        read -n1 -p "Missing package dependencies, would you like this script to try and install these packages? (y/n): " yesorno
+
+        case "$yesorno" in
+            y) 
+                apt-get -qq -y update >/dev/null 2>&1 || 
+                { echo "Error when updating apt package database. Please run apt-get update manually and rerun this script." ; exit 1; }
+                apt-get -qq -y install openjdk-7-jdk wget git unzip gnupg coreutils >/dev/null 2>&1 ||
+                { echo "Could not install package dependencies, please install these manually and rerun installation script." ; exit 1; }
+
+                if ! setbin_paths; then
+                    echo "Could not install package dependencies, these may not exist in apt repos (sources.list)."; 
+                    exit 1;
+                else
+                    echo "Successfully installed package dependencies.";
+                    return 0;
+                fi
+            ;;
+
+            n)
+                echo "";
+                echo "Please install package dependencies manually and rerun installation script.";
+                echo "apt-get install openjdk-7-jdk git wget unzip gnupg coreutils";
+
+                exit 1;
+            ;;
+
+        esac
+
+    fi
+
+}
+
+
+
+function install {
+
+    if ! setbin_paths; then
+
+        echo "Missing package dependencies. We have already validated the existense of this packages, but we failed anyway.";
+        exit 1;
+    fi        
+        
+
+    if [[ ! -d "$nhzroot" ]]; then
+
+        echo -n "Creating nhz client root directory.. ";
+        mkdir -p $nhzroot && echo "done." || { echo "Could not create nhz client root directory." ; exit 1;}
+    fi
+
+    if [[ "$1" != "update" ]] && [[ "$(ls $nhzroot |wc -l)" -gt 0 ]]; then
+
+        echo "nhz client root directory contain files. If you want to overwrite this, issue an update.";
+        exit 0;
+    fi
+
+
+    if [[ ! -d "/etc/nhz/" ]]; then
+
+        echo -n "Creating configuration directory for nhz client.. ";
+        mkdir -p /etc/nhz && echo "done." || { echo "Could not create nhz client configuration directory." ; exit 1;}
+    fi
+
+
+    if [[ -d "/etc/nhz/" ]] && [[ -f "nhz.conf" ]]; then
+
+        cp nhz.conf /etc/nhz/ || { echo "Could not copy nhz.conf to nhz configuration directory" ; exit 1;}
+    fi
+
+
+    if [[ -f "nhz" ]] && [[ -d "/etc/init.d" ]]; then
+        cp nhz /etc/init.d/ || { echo "Could not copy nhz init script to init.d directory." ; exit 1;}
+
+    fi
+
+
+    if ! id -u nhz >/dev/null 2>&1; then
+
+        echo -n "Adding nhz user.. ";
+        useradd -M -u 1166 -b /usr/local/bin -s /sbin/nologin nhz >/dev/null 2>&1 && echo "done." ||
+        { echo "Could not add nhz user.  Add it manually after this installation has finished." && exit 1;}
+    fi
+
+
+
+    if [[ -d "binaries/" ]]; then
+
+        echo -n "Removing old local git directory..";
+        rm -r binaries/ 2>&1 || { echo "Could not remove old local git directory." exit 1; }
+        echo "done."
+    fi
+
+    echo -n "Downloading nhz-client from GitHub...";
+    
+    $git_bin clone https://github.com/NeXTHorizon/binaries > /dev/null 2>&1 ||
+    { echo "could not download nhz client. Exiting installation."; exit 1; }
+
+    if [[ -d "binaries/" ]]; then
+
+        cd binaries/
+    fi
+
+    client_version=$(ls -al |egrep "*.zip$" |awk {'print $9'} |sort -V |tail -n 1);
+
+    if [[ -n "$client_version" ]]; then
+        shasumfile=$(ls -al  |egrep "$client_version" |grep "sha256sum" | tail -n 1 |awk {'print $9'});
+        sha=$(cat $shasumfile | awk {'print $1'});
+    fi
+
+    if [[ -n "$sha" ]]; then
+
+        echo -n "Verifying $shasum_bin for $client_version..";
+        zip_sha=$($shasum_bin $client_version |awk {'print $1'});
+
+        if [[ "$sha" == "$zip_sha" ]]; then
+
+            echo "done."
+
+            echo -n "Extracting files into nhz root directory...";
+
+            $unzip_bin -oq $client_version -d /usr/local/bin/ && chown -R nhz:nhz "$nhzroot" > /dev/null 2>&1 ||
+            { echo "Could not extract files into nhz client root directory."; exit 1; }
+            
+            echo "done.";
+
+        else
+
+            echo "CRITICAL: The shasum does not match!. Installation will not continue.";
+            exit 1;
+        fi
+    fi
+
+}
+
+
+function update {
+
+        if [[ -f "/etc/init.d/nhz" ]] && [[ "$(/etc/init.d/nhz status |grep 'started' |wc -l)" -gt 0 ]]; then
+
+            /etc/init.d/nhz stop
+        fi
+
+        install update
+        /etc/init.d/nhz start
+
+}
+
+case "$1" in
+
+    install)
+            
+        if install_deps; then
+
+            install
+        fi
+
+        echo "Installation done. Start nhz client with /etc/init.d/nhz start, then browse http://localhost:7775";
+        echo "Be sure accept incoming tcp traffic to port 7774, else nhz client will not be able to communicate with p2p network.";
+
+    ;;
+    update)
+ 
+        if install_deps; then
+
+            update
+        fi
+
+        echo "Update done.";
+        
+    ;;
+
+    *)
+
+    N=${0##*/}
+    echo "Usage: $N {install|update}" >&2
+    exit 1
+    ;;
+esac
+
+exit 0
